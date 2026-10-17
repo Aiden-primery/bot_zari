@@ -1,5 +1,7 @@
 from highrise import BaseBot, User, Position
 from highrise.__main__ import BotDefinition
+import threading
+from flask import Flask
 from asyncio import sleep, create_task, CancelledError
 import asyncio
 import os
@@ -2689,94 +2691,80 @@ class AdvancedBot(BaseBot):
 
         self.dance_tasks[self.user_id] = create_task(new_emote_loop())
 
-async def handle_ping(request):
-    return aiohttp.web.Response(text="Bot is Alive!")
 
-async def start_background_web_server():
+# ==========================================
+# وب‌سرور پاسخگویی به Ping رندر و UptimeRobot
+# ==========================================
+app = Flask(__name__)
+
+
+@app.route("/")
+def health_check():
+    """پاسخ مستقیم با کد 200 به UptimeRobot برای جلوگیری از Sleep شدن رندر"""
+    return "Highrise Bot is Alive and Running!", 200
+
+
+def run_flask_server():
     try:
-        app = aiohttp.web.Application()
-        app.router.add_get('/', handle_ping)
-        runner = aiohttp.web.AppRunner(app)
-        await runner.setup()
-        port = int(os.getenv("PORT", 8080))
-        site = aiohttp.web.TCPSite(runner, '0.0.0.0', port)
-        await site.start()
-        logger.info(f"وب‌سرور زنده نگهدارنده روی پورت {port} فعال شد.")
+        # دریافت پورتی که رندر اختصاص می‌دهد
+        port = int(os.environ.get("PORT", 8080))
+        logger.info(f"وب‌سرور Flask Keep-Alive روی پورت {port} آماده به کار شد.")
+        app.run(host="0.0.0.0", port=port)
     except Exception as e:
-        logger.error(f"خطا در اجرای وب‌سرور پس‌زمینه: {e}")
-    
-# ۲. تابع اصلی اجرای ربات (نسخه ضدضربه و مجهز به کنترل خطای تسک‌ها)
+        logger.error(f"خطا در اجرای سرور Flask: {e}")
+
+
+# ==========================================
+# تابع اصلی اجرای ربات های‌رایز
+# ==========================================
 async def main():
-    import os
-    import asyncio
-    import threading
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-    
     logger.info("تلاش برای بارگذاری متغیرهای محیطی...")
     room_id = os.getenv("ROOM_ID", "6acdc6377bd319a1396acd49")
     api_token = os.getenv("API_TOKEN", "b1051ee70d6a626dabd56f888efb725ce1e366aee74fef6476a18f277dcd17c5")
-    
+
     if not room_id or not api_token:
         logger.error("ROOM_ID یا API_TOKEN تنظیم نشده‌اند.")
         return
-    
-    logger.info(f"ROOM_ID: {room_id}")
-    logger.info(f"API_TOKEN: {api_token}")
 
-    # ساختار وب‌سرور داخلی و سبک پایتون
-    class PingHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header('Content-type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b"Bot is Alive!")
-        def log_message(self, format, *args):
-            return
+    logger.info(f"اتصال با ROOM_ID: {room_id}")
 
-    def run_web_server():
-        try:
-            port = int(os.getenv("PORT", 8080))
-            server = HTTPServer(('0.0.0.0', port), PingHandler)
-            logger.info(f"وب‌سرور زنده نگهدارنده روی پورت {port} فعال شد.")
-            server.serve_forever()
-        except Exception as e:
-            logger.error(f"خطا در اجرای وب‌سرور پس‌زمینه: {e}")
-
-    # اجرای وب‌سرور در یک نخ کاملاً جداگانه برای جلوگیری از فریز شدن
-    web_thread = threading.Thread(target=run_web_server, daemon=True)
-    web_thread.start()
-
-    # تنظیم مدیریت خطای جهانی برای asyncio تا هیچ تسکی ربات را کرش نکند
+    # مدیریت خطاهای تسک‌های پس‌زمینه
     def handle_exception(loop, context):
         msg = context.get("exception", context["message"])
-        logger.error(f"یک تسک پس‌زمینه با خطا مواجه شد اما مهار شد: {msg}")
+        logger.error(f"خطای تسک پس‌زمینه مهار شد: {msg}")
 
     try:
         loop = asyncio.get_running_loop()
         loop.set_exception_handler(handle_exception)
     except Exception as le:
-        logger.error(f"خطا در تنظیم exception handler: {le}")
+        logger.error(f"خطا در ثبت Exception Handler: {le}")
 
     max_reconnect_attempts = 10
     attempt = 0
     while attempt < max_reconnect_attempts:
         try:
-            room_id = os.environ.get("ROOM_ID", room_id)
             bot_instance = AdvancedBot()
             bot_def = BotDefinition(room_id=room_id, api_token=api_token, bot=bot_instance)
-            logger.info(f"تلاش برای اتصال به سرور Highrise... روم: {room_id}")
+            logger.info(f"در حال تلاش برای اتصال به های‌رایز (روم: {room_id})...")
+
             from highrise.__main__ import main as highrise_main
             await highrise_main([bot_def])
         except Exception as e:
-            logger.error(f"اتصال WebSocket قطع شد یا خطا داد: {e}")
+            logger.error(f"ارتباط WebSocket قطع شد: {e}")
             try:
                 await bot_instance.cleanup_tasks()
             except Exception:
                 pass
             attempt += 1
-            logger.info(f"انتظار برای اتصال مجدد... تلاش {attempt} از {max_reconnect_attempts}")
+            logger.info(f"آماده‌سازی برای اتصال مجدد... تلاش {attempt} از {max_reconnect_attempts}")
             await asyncio.sleep(6)
 
+
 if __name__ == "__main__":
-    import asyncio
+    # ۱. اول سرور Flask در یک Thread پس‌زمینه استارت می‌خورد
+    flask_thread = threading.Thread(target=run_flask_server, daemon=True)
+    flask_thread.start()
+
+    # ۲. سپس حلقه ربات اجرا می‌شود
     asyncio.run(main())
+
