@@ -1,0 +1,16 @@
+# PyCharm
+.idea/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment (اگر داری)
+venv/
+env/
+ENV/
+
+# OS files
+.DS_Store
+Thumbs.db
